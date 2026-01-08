@@ -2,13 +2,14 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>Produktfoto senden</title>
+    <title>Produktfoto zum Pi senden</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 <body>
     <h1>Produktfoto senden</h1>
 
     <label>EAN:
-        <input id="ean" type="text" placeholder="EAN-Nummer">
+        <input id="ean" type="text" placeholder="EAN">
     </label>
     <br><br>
 
@@ -20,23 +21,25 @@
     <pre id="log"></pre>
 
     <script>
-        const wsUrl = "ws://DEIN_PI_IP:8765";
+        // Verwendet automatisch die IP des Servers, auf dem die Seite aufgerufen wird
+        const wsUrl = "ws://" + window.location.hostname + ":8765";
         let ws;
-        const log = (msg) => {
+
+        function log(msg) {
             document.getElementById("log").textContent += msg + "\n";
-        };
+        }
 
         function connect() {
             ws = new WebSocket(wsUrl);
-            ws.onopen = () => log("Verbunden mit WebSocket.");
-            ws.onmessage = (event) => log("Server: " + event.data);
-            ws.onerror = (err) => log("WebSocket Fehler: " + err);
+            ws.onopen = () => log("Verbunden mit " + wsUrl);
+            ws.onmessage = (e) => log("Server: " + e.data);
             ws.onclose = () => log("Verbindung geschlossen.");
+            ws.onerror = (e) => log("Fehler: " + e);
         }
 
         connect();
 
-        document.getElementById("sendBtn").onclick = async () => {
+        document.getElementById("sendBtn").onclick = () => {
             const ean = document.getElementById("ean").value.trim();
             const fileInput = document.getElementById("fileInput");
             const file = fileInput.files[0];
@@ -48,8 +51,7 @@
 
             const reader = new FileReader();
             reader.onload = () => {
-                const base64Data = reader.result.split(",")[1]; // data:image/jpeg;base64,...
-
+                const base64Data = reader.result.split(",")[1]; // 'data:image/...;base64,...'
                 const payload = {
                     ean: ean,
                     image_base64: base64Data

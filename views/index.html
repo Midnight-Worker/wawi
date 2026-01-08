@@ -2,131 +2,86 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>EAN-Scanner</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 20px;
+    <title>EAN-Scanner Desktop</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        async function lookup() {
+            const ean = document.getElementById("ean").value.trim();
+            if (!ean) {
+                alert("Bitte EAN eingeben.");
+                return;
+            }
+            try {
+                const result = await window.pywebview.api.lookup_ean(ean);
+                renderResult(result);
+            } catch (e) {
+                console.error(e);
+                alert("Fehler bei lookup_ean.");
+            }
         }
-        #ean-input {
-            width: 100%;
-            font-size: 2rem;
-            padding: 10px;
-            box-sizing: border-box;
+
+        async function saveManual() {
+            const ean = document.getElementById("ean").value.trim();
+            const name = document.getElementById("name").value.trim();
+            const brand = document.getElementById("brand").value.trim();
+            if (!ean || !name) {
+                alert("EAN und Name sind Pflicht.");
+                return;
+            }
+            try {
+                const res = await window.pywebview.api.save_product(ean, name, brand);
+                alert(res.message);
+            } catch (e) {
+                console.error(e);
+                alert("Fehler beim Speichern.");
+            }
         }
-        #result {
-            margin-top: 20px;
-            font-size: 1.1rem;
+
+        function renderResult(data) {
+            document.getElementById("result").textContent = JSON.stringify(data, null, 2);
+
+            if (data.name) {
+                document.getElementById("name").value = data.name;
+            }
+            if (data.brand) {
+                document.getElementById("brand").value = data.brand;
+            }
+
+            const img = document.getElementById("product-image");
+            if (data.image_path) {
+                // pywebview lädt lokal, daher file://-Pfad
+                img.src = "file://" + data.image_path;
+                img.style.display = "block";
+            } else {
+                img.src = "";
+                img.style.display = "none";
+            }
         }
-        .error {
-            color: red;
-        }
-        #manual-section {
-            border-top: 1px solid #ccc;
-            margin-top: 20px;
-            padding-top: 10px;
-        }
-    </style>
+    </script>
 </head>
 <body>
-    <h1>EAN-Scanner</h1>
-    <p>Cursor ins Feld setzen und mit Handscanner scannen (oder EAN eintippen und Enter).</p>
+    <h1>EAN-Scanner Desktop (pywebview)</h1>
 
-    <input id="ean-input" type="text" autofocus placeholder="EAN scannen..." />
-    <div id="result"></div>
+    <label>EAN:
+        <input id="ean" type="text" placeholder="EAN">
+    </label>
+    <button onclick="lookup()">Lookup</button>
 
-    <div id="manual-section" style="display:none; margin-top:20px;">
-        <h2>Produkt manuell anlegen</h2>
-        <p id="manual-ean-label"></p>
-        <label>
-            Name:<br>
-            <input id="manual-name" type="text" style="width:100%;">
-        </label><br><br>
-        <label>
-            Marke/Hersteller:<br>
-            <input id="manual-brand" type="text" style="width:100%;">
-        </label><br><br>
-        <button id="manual-save-btn">Speichern</button>
-        <div id="manual-message" style="margin-top:10px;"></div>
-    </div>
+    <h2>Produktdaten</h2>
+    <label>Name:
+        <input id="name" type="text" size="40">
+    </label>
+    <br>
+    <label>Marke:
+        <input id="brand" type="text" size="40">
+    </label>
+    <br>
+    <button onclick="saveManual()">Manuell speichern</button>
 
-    <script>
-        const input = document.getElementById('ean-input');
-        const resultDiv = document.getElementById('result');
-        const manualSection = document.getElementById('manual-section');
-        const manualEanLabel = document.getElementById('manual-ean-label');
-        const manualName = document.getElementById('manual-name');
-        const manualBrand = document.getElementById('manual-brand');
-        const manualSaveBtn = document.getElementById('manual-save-btn');
-        const manualMessage = document.getElementById('manual-message');
+    <h2>Bild</h2>
+    <img id="product-image" alt="Produktbild" style="max-width: 300px; display: none;">
 
-        let lastEan = "";
-
-        function showResult(data) {
-            manualSection.style.display = 'none';
-            manualMessage.textContent = '';
-
-            if (!data.ok) {
-                resultDiv.innerHTML = '<p class="error">' + (data.message || 'Unbekannter Fehler') + '</p>';
-                lastEan = data.ean;
-                manualEanLabel.textContent = 'EAN: ' + data.ean;
-                manualName.value = '';
-                manualBrand.value = '';
-                manualSection.style.display = 'block';
-                return;
-            }
-
-            resultDiv.innerHTML = `
-                <p><strong>Quelle:</strong> ${data.source}</p>
-                <p><strong>EAN:</strong> ${data.ean}</p>
-                <p><strong>Name:</strong> ${data.name}</p>
-                <p><strong>Marke:</strong> ${data.brand || '-'}</p>
-            `;
-        }
-
-        input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') {
-                const ean = input.value.trim();
-                if (!ean) return;
-
-                lastEan = ean;
-                resultDiv.innerHTML = '<p>Suche nach ' + ean + ' ...</p>';
-                manualSection.style.display = 'none';
-                manualMessage.textContent = '';
-
-                if (window.pywebview && window.pywebview.api) {
-                    window.pywebview.api.lookup_ean(ean).then(showResult);
-                } else {
-                    resultDiv.innerHTML = '<p class="error">pywebview API nicht verfügbar.</p>';
-                }
-
-                input.value = '';
-            }
-        });
-
-        manualSaveBtn.addEventListener('click', function () {
-            const name = manualName.value.trim();
-            const brand = manualBrand.value.trim();
-
-            if (!lastEan || !name) {
-                manualMessage.textContent = 'Bitte mindestens EAN (per Scan) und Name angeben.';
-                return;
-            }
-
-            if (window.pywebview && window.pywebview.api) {
-                window.pywebview.api.save_product(lastEan, name, brand).then(function (res) {
-                    if (res.ok) {
-                        manualMessage.textContent = 'Gespeichert.';
-                    } else {
-                        manualMessage.textContent = 'Fehler: ' + (res.message || 'Unbekannt');
-                    }
-                });
-            } else {
-                manualMessage.textContent = 'pywebview API nicht verfügbar.';
-            }
-        });
-
-        window.addEventListener('click', () => input.focus());
-    </script>
+    <h2>Rohdaten</h2>
+    <pre id="result"></pre>
 </body>
 </html>
