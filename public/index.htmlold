@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>WAWI Scanner</title>
+  <style>
+    #scanner-container {
+      width: 100%;
+      max-width: 400px;
+      margin-bottom: 1rem;
+      border: 1px solid #ccc;
+    }
+    #scanner-container video {
+      width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Wareneingang</h1>
+
+  <div id="scanner-container"></div>
+
+  <button id="start-btn">Scanner starten</button>
+  <button id="stop-btn">Scanner stoppen</button>
+
+  <div>
+    <label for="ean">EAN:</label>
+    <input id="ean" placeholder="EAN scannen…" autofocus>
+  </div>
+
+  <div>
+    <label for="name">Name:</label>
+    <input id="name">
+  </div>
+
+  <div>
+    <label for="lagerort">Lagerort:</label>
+    <input id="lagerort" placeholder="z.B. Regal A">
+  </div>
+
+  <div>
+    <label for="preis">Preis:</label>
+    <input id="preis" type="number" step="0.01">
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+  <script>
+    let scannerRunning = false;
+
+    document.getElementById('start-btn').addEventListener('click', startScanner);
+    document.getElementById('stop-btn').addEventListener('click', stopScanner);
+
+    function startScanner() {
+      if (scannerRunning) return;
+
+      Quagga.init({
+        inputStream: {
+          name: "Live",
+          type: "LiveStream",
+          target: document.querySelector('#scanner-container'),
+          constraints: {
+            facingMode: "environment"
+          }
+        },
+        decoder: {
+          readers: ["ean_reader"]
+        }
+      }, err => {
+        if (err) {
+          console.error(err);
+          alert("Scanner konnte nicht gestartet werden: " + err);
+          return;
+        }
+        Quagga.start();
+        scannerRunning = true;
+        console.log("Scanner gestartet");
+      });
+
+      Quagga.onDetected(onDetected);
+    }
+
+    function stopScanner() {
+      if (!scannerRunning) return;
+      Quagga.stop();
+      Quagga.offDetected(onDetected);
+      scannerRunning = false;
+      console.log("Scanner gestoppt");
+    }
+
+    function onDetected(data) {
+      const code = data.codeResult.code;
+      console.log("EAN erkannt:", code);
+      document.getElementById('ean').value = code;
+      stopScanner();
+      lookup(); // nach dem Scan automatisch Lookup starten
+    }
+
+    async function lookup() {
+      const ean = document.getElementById('ean').value;
+      if (!ean) return;
+
+      try {
+        const res = await fetch(`/api/lookup?ean=${encodeURIComponent(ean)}`);
+        if (!res.ok) {
+          console.error("Lookup-Fehler:", res.status);
+          return;
+        }
+        const data = await res.json();
+
+        // hier musst du ggf. anpassen, wie die API antwortet
+        const product = Array.isArray(data) ? data[0] : data;
+
+        document.getElementById('name').value = product.name || "";
+        document.getElementById('preis').value = product.price || "";
+      } catch (err) {
+        console.error("Lookup fehlgeschlagen:", err);
+      }
+    }
+  </script>
+</body>
+</html>
+
