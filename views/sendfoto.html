@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Produktfoto senden</title>
+</head>
+<body>
+    <h1>Produktfoto senden</h1>
+
+    <label>EAN:
+        <input id="ean" type="text" placeholder="EAN-Nummer">
+    </label>
+    <br><br>
+
+    <input id="fileInput" type="file" accept="image/*" capture="environment">
+    <br><br>
+
+    <button id="sendBtn">Bild senden</button>
+
+    <pre id="log"></pre>
+
+    <script>
+        const wsUrl = "ws://DEIN_PI_IP:8765";
+        let ws;
+        const log = (msg) => {
+            document.getElementById("log").textContent += msg + "\n";
+        };
+
+        function connect() {
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => log("Verbunden mit WebSocket.");
+            ws.onmessage = (event) => log("Server: " + event.data);
+            ws.onerror = (err) => log("WebSocket Fehler: " + err);
+            ws.onclose = () => log("Verbindung geschlossen.");
+        }
+
+        connect();
+
+        document.getElementById("sendBtn").onclick = async () => {
+            const ean = document.getElementById("ean").value.trim();
+            const fileInput = document.getElementById("fileInput");
+            const file = fileInput.files[0];
+
+            if (!ean || !file) {
+                log("Bitte EAN und Bild wählen.");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                const base64Data = reader.result.split(",")[1]; // data:image/jpeg;base64,...
+
+                const payload = {
+                    ean: ean,
+                    image_base64: base64Data
+                };
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(payload));
+                    log("Bild gesendet.");
+                } else {
+                    log("WebSocket nicht verbunden.");
+                }
+            };
+            reader.readAsDataURL(file);
+        };
+    </script>
+</body>
+</html>
