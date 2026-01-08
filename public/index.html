@@ -1,71 +1,129 @@
-<!DOCTYPE html>
-    <html lang="de">
-    <head>
-        <meta charset="UTF-8">
-        <title>EAN Scanner</title>
-        <style>
-            body {
-                font-family: sans-serif;
-                margin: 20px;
+import requests
+import sqlite3
+import os
+
+DB_PATH = "products.db"
+
+
+def init_db():
+    """Erzeugt eine lokale SQLite-DB, falls noch nicht vorhanden."""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            ean TEXT PRIMARY KEY,
+            name TEXT,
+            brand TEXT,
+            source TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+class Api:
+    def __init__(self):
+        init_db()
+
+    # -------- Hilfsfunktionen für lokale DB ----------
+
+    def _db_get_product(self, ean: str):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT ean, name, brand, source FROM products WHERE ean = ?", (ean,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return {
+                "ean": row[0],
+                "name": row[1],
+                "brand": row[2],
+                "source": row[3] or "local"
             }
-            #ean-input {
-                width: 100%;
-                font-size: 2rem;
-                padding: 10px;
-                box-sizing: border-box;
-            }
-            #result {
-                margin-top: 20px;
-                font-size: 1.2rem;
-            }
-            .error {
-                color: red;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>EAN-Scanner</h1>
-        <p>Cursor ins Feld setzen und mit Handscanner scannen (oder EAN eintippen und Enter).</p>
-        <input id="ean-input" type="text" autofocus placeholder="EAN scannen..." />
-        <div id="result"></div>
+        return None
 
-        <script>
-            const input = document.getElementById('ean-input');
-            const resultDiv = document.getElementById('result');
+    def _db_save_product(self, ean: str, name: str, brand: str, source: str = "local"):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT OR REPLACE INTO products (ean, name, brand, source)
+            VALUES (?, ?, ?, ?)
+        """, (ean, name, brand, source))
+        conn.commit()
+        conn.close()
 
-            function showResult(data) {
-                if (!data.ok) {
-                    resultDiv.innerHTML = '<p class="error">' + (data.message || 'Unbekannter Fehler') + '</p>';
-                    return;
-                }
-                resultDiv.innerHTML = `
-                    <p><strong>EAN:</strong> ${data.ean}</p>
-                    <p><strong>Name:</strong> ${data.name}</p>
-                    <p><strong>Marke:</strong> ${data.brand || '-'}</p>
-                `;
+    # Diese Methode kannst du auch verwenden, um OPD-Dumps zu importieren.
+    # z.B. CSV einlesen und _db_save_product(...) aufrufen.
+
+    # -------- API für pywebview / JS ----------
+
+    def lookup_ean(self, ean):
+        """
+        Lookup-Kette:
+        1. Lokale/OPD-Datenbank (SQLite)
+        2. OpenFoodFacts (online)
+        3. sonst: "nicht gefunden" -> Frontend zeigt Eingabefelder an
+        """
+
+        def make_result(source, ean, name=None, brand=None, ok=True, message=None):
+            return {
+                "ok": ok,
+                "ean": ean,
+                "name": name or "",
+                "brand": brand or "",
+                "source": source,
+                "message": message or "",
             }
 
-            input.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter') {
-                    const ean = input.value.trim();
-                    if (!ean) return;
+        # ---- 1) Lokale / OPD-DB ----
+        try:
+            local_product = self._db_get_product(ean)
+            if local_product:
+                return make_result(
+                    source=local_product["source"],
+                    ean=local_product["ean"],
+                    name=local_product["name"],
+                    brand=local_product["brand"],
+                )
+        except Exception as e:
+            print(f"Lokale DB Fehler: {e}")
 
-                    resultDiv.innerHTML = '<p>Suche nach ' + ean + ' ...</p>';
+        # ---- 2) OpenFoodFacts ----
+        try:
+            url = f"https://world.openfoodfacts.org/api/v0/product/{ean}.json"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == 1:
+                    product = data.get("product", {})
+                    name = product.get("product_name", "")
+                    brand = ", ".join(product.get("brands_tags", [])) or product.get("brands", "")
+                    # in lokale DB übernehmen (Quelle: openfoodfacts)
+                    self._db_save_product(ean, name, brand, source="openfoodfacts")
+                    return make_result(
+                        source="openfoodfacts",
+                        ean=ean,
+                        name=name,
+                        brand=brand,
+                    )
+        except Exception as e:
+            print(f"OpenFoodFacts Fehler: {e}")
 
-                    // Python-API über pywebview aufrufen
-                    if (window.pywebview && window.pywebview.api) {
-                        window.pywebview.api.lookup_ean(ean).then(showResult);
-                    } else {
-                        resultDiv.innerHTML = '<p class="error">pywebview API nicht verfügbar.</p>';
-                    }
+        # ---- 3) Nichts gefunden ----
+        return make_result(
+            source="none",
+            ean=ean,
+            ok=False,
+            message="Kein Produkt gefunden. Bitte Daten manuell eingeben und speichern.",
+        )
 
-                    // optional: Feld leeren für nächsten Scan
-                    input.value = '';
-                }
-            });
+    def save_product(self, ean, name, brand):
+        """
+        Vom Frontend aufgerufen, wenn der Nutzer manuell ein Produkt eingibt.
+        """
+        try:
+            self._db_save_product(ean, name, brand, source="manual")
+            return {"ok": True, "message": "Produkt gespeichert."}
+        except Exception as e:
+            return {"ok": False, "message": f"Fehler beim Speichern: {e}"}
 
-            // Sicherstellen, dass der Fokus im Feld bleibt (z.B. nach Klick)
-            window.addEventListener('click', () => input.focus());
-        </script>
-    </body>
-    </html>
