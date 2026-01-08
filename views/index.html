@@ -5,15 +5,55 @@
     <title>EAN-Scanner Desktop</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script>
+        // Nur zur Anzeige, damit du weißt, was du im Handy-Browser eingeben musst:
+        // IP deines Pi + Port 8000
+        const MOBILE_BASE_URL = "http://192.168.0.30:8000/mobile";
+
+        let wsDesktop = null;
+
+        function logDesktop(msg) {
+            const el = document.getElementById("ws-log");
+            el.textContent += msg + "\n";
+        }
+
+        function connectWebSocketDesktop() {
+            // Desktop (pywebview) läuft lokal, daher 127.0.0.1
+            const wsUrl = "ws://127.0.0.1:8765";
+            wsDesktop = new WebSocket(wsUrl);
+
+            wsDesktop.onopen = () => logDesktop("Desktop-WS verbunden: " + wsUrl);
+            wsDesktop.onmessage = (e) => {
+                // Desktop kann Messages vom Server ignorieren oder irgendwann auswerten
+                logDesktop("WS-Empfangen: " + e.data);
+            };
+            wsDesktop.onclose = () => logDesktop("Desktop-WS geschlossen.");
+            wsDesktop.onerror = (e) => logDesktop("Desktop-WS Fehler: " + e);
+        }
+
+        window.addEventListener("load", connectWebSocketDesktop);
+
         async function lookup() {
             const ean = document.getElementById("ean").value.trim();
             if (!ean) {
-                alert("Bitte EAN eingeben.");
+                alert("Bitte EAN eingeben oder scannen.");
                 return;
             }
             try {
                 const result = await window.pywebview.api.lookup_ean(ean);
                 renderResult(result);
+
+                // Artikelinfo per WebSocket an Handy schicken (als "zweiter Monitor")
+                if (wsDesktop && wsDesktop.readyState === WebSocket.OPEN && result.ean) {
+                    const payload = {
+                        type: "set_article",
+                        ean: result.ean,
+                        name: result.name,
+                        brand: result.brand
+                    };
+                    wsDesktop.send(JSON.stringify(payload));
+                    logDesktop("Artikel an Handy gesendet: " + JSON.stringify(payload));
+                }
+
             } catch (e) {
                 console.error(e);
                 alert("Fehler bei lookup_ean.");
@@ -40,6 +80,9 @@
         function renderResult(data) {
             document.getElementById("result").textContent = JSON.stringify(data, null, 2);
 
+            if (data.ean) {
+                document.getElementById("ean").value = data.ean;
+            }
             if (data.name) {
                 document.getElementById("name").value = data.name;
             }
@@ -49,13 +92,16 @@
 
             const img = document.getElementById("product-image");
             if (data.image_path) {
-                // pywebview lädt lokal, daher file://-Pfad
                 img.src = "file://" + data.image_path;
                 img.style.display = "block";
             } else {
                 img.src = "";
                 img.style.display = "none";
             }
+
+            // Mobile-Basis-URL anzeigen (ohne EAN / ohne kryptische Query)
+            const mobileUrlInput = document.getElementById("mobile-url");
+            mobileUrlInput.value = MOBILE_BASE_URL;
         }
     </script>
 </head>
@@ -63,7 +109,7 @@
     <h1>EAN-Scanner Desktop (pywebview)</h1>
 
     <label>EAN:
-        <input id="ean" type="text" placeholder="EAN">
+        <input id="ean" type="text" placeholder="EAN (oder per Scanner)">
     </label>
     <button onclick="lookup()">Lookup</button>
 
@@ -78,8 +124,15 @@
     <br>
     <button onclick="saveManual()">Manuell speichern</button>
 
-    <h2>Bild</h2>
+    <h2>Bild (am Pi)</h2>
     <img id="product-image" alt="Produktbild" style="max-width: 300px; display: none;">
+
+    <h2>Mobile-Ansicht (zweiter Monitor)</h2>
+    <p>Mit dem Handy im selben WLAN diese Adresse öffnen:</p>
+    <input id="mobile-url" type="text" readonly style="width: 100%;">
+
+    <h3>WebSocket-Log (Desktop)</h3>
+    <pre id="ws-log" style="height: 150px; overflow:auto; border:1px solid #ccc;"></pre>
 
     <h2>Rohdaten</h2>
     <pre id="result"></pre>

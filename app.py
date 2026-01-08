@@ -4,10 +4,11 @@ import asyncio
 import json
 import base64
 import sqlite3
+import time
 
 import webview
 import requests
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, send_file
 import websockets
 from openean.OpenEAN import OpenEAN
 
@@ -25,6 +26,15 @@ VIEWS_DIR = os.path.join(BASE_DIR, "views")
 os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs(MOBILE_VIEWS_DIR, exist_ok=True)
 os.makedirs(VIEWS_DIR, exist_ok=True)
+
+# --- Dummy-Bild erzeugen, falls noch nicht vorhanden (1x1 PNG) ---
+DUMMY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+)
+DUMMY_IMAGE_PATH = os.path.join(IMAGE_DIR, "dummy.png")
+if not os.path.exists(DUMMY_IMAGE_PATH):
+    with open(DUMMY_IMAGE_PATH, "wb") as f:
+        f.write(base64.b64decode(DUMMY_PNG_BASE64))
 
 
 # ----------------- Datenbank-Setup -----------------
@@ -136,7 +146,7 @@ class Api:
             print("OpenFoodFacts Fehler:", e)
             return None
 
-    # ---------- API-Funktionen für JS ----------
+    # ---------- API-Funktionen für JS (Desktop) ----------
 
     def lookup_ean(self, ean):
         """
@@ -219,72 +229,175 @@ class Api:
 flask_app = Flask(__name__)
 
 
-#@flask_app.route("/mobile")
-#def mobile_page():
-#    return send_from_directory(MOBILE_VIEWS_DIR, "mobile.html")
-
 @flask_app.route("/")
 def root():
-    return "<h1>Server läuft 😊</h1><p>Ruf <code>/mobile</code> auf.</p>"
+    return "<h1>Server läuft 😊</h1><p>Mit Handy: <code>/mobile</code> öffnen.</p>"
+
 
 @flask_app.route("/mobile")
 def mobile_page():
-    return "<h1>Mobile-Upload-Seite</h1><p>Die Route funktioniert.</p>"
+    # Statische mobile.html ausliefern
+    return send_from_directory(MOBILE_VIEWS_DIR, "mobile.html")
 
 
-# ----------------- WebSocket-Server für Bildupload -----------------
+@flask_app.route("/image/<ean>")
+def product_image(ean):
+    """
+    Liefert das Produktbild zu einer EAN oder ein Dummybild, falls keins existiert.
+    Handy kennt die EAN nicht, es bekommt nur diese URL über WebSocket.
+    """
+    # 1) Standardpfad nach Namensschema
+    candidate = os.path.join(IMAGE_DIR, f"{ean}.jpg")
+
+    img_path = None
+    if os.path.exists(candidate):
+        img_path = candidate
+    else:
+        # 2) Optional in DB nachsehen
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT image_path FROM products WHERE ean = ?", (ean,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0] and os.path.exists(row[0]):
+            img_path = row[0]
+        else:
+            # 3) Dummy
+            img_path = DUMMY_IMAGE_PATH
+
+    ext = os.path.splitext(img_path)[1].lower()
+    if ext == ".png":
+        mimetype = "image/png"
+    else:
+        mimetype = "image/jpeg"
+
+    return send_file(img_path, mimetype=mimetype)
+
+
+# ----------------- WebSocket-Server (Sync Desktop <-> Handy) -----------------
+
+connected_clients = set()      # alle offenen WebSocket-Verbindungen
+last_article = None            # zuletzt vom Desktop gesetzter Artikel (EAN, Name, Brand, image_url)
+
+
+async def broadcast(message_dict):
+    """Sendet eine Nachricht an alle verbundenen Clients."""
+    if not connected_clients:
+        return
+    data = json.dumps(message_dict)
+    dead = []
+    for ws in connected_clients:
+        try:
+            await ws.send(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        connected_clients.discard(ws)
+
+
+def save_image_for_ean(ean: str, image_b64: str):
+    """Speichert Bild für EAN und aktualisiert DB, gibt Pfad zurück."""
+    img_bytes = base64.b64decode(image_b64)
+    filename = f"{ean}.jpg"
+    filepath = os.path.join(IMAGE_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(img_bytes)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE products
+        SET image_path = ?
+        WHERE ean = ?
+    """, (filepath, ean))
+    if cur.rowcount == 0:
+        cur.execute("""
+            INSERT INTO products (ean, name, brand, source, image_path)
+            VALUES (?, '', '', 'image-only', ?)
+        """, (ean, filepath))
+    conn.commit()
+    conn.close()
+    return filepath
 
 
 async def ws_handler(websocket):
-    async for message in websocket:
-        try:
-            data = json.loads(message)
-            ean = data.get("ean")
-            image_b64 = data.get("image_base64")
-
-            if not ean or not image_b64:
-                await websocket.send(json.dumps({
-                    "ok": False,
-                    "message": "ean und image_base64 erforderlich"
-                }))
+    global last_article
+    connected_clients.add(websocket)
+    print("WebSocket connected, clients:", len(connected_clients))
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
                 continue
 
-            # Bild dekodieren und speichern
-            img_bytes = base64.b64decode(image_b64)
-            filename = f"{ean}.jpg"
-            filepath = os.path.join(IMAGE_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(img_bytes)
+            msg_type = data.get("type")
 
-            # in DB Pfad speichern
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE products
-                SET image_path = ?
-                WHERE ean = ?
-            """, (filepath, ean))
-            if cur.rowcount == 0:
-                cur.execute("""
-                    INSERT INTO products (ean, name, brand, source, image_path)
-                    VALUES (?, '', '', 'image-only', ?)
-                """, (ean, filepath))
-            conn.commit()
-            conn.close()
+            # Desktop: aktuellen Artikel setzen (nach Scan / Lookup)
+            if msg_type == "set_article":
+                ean = data.get("ean")
+                if not ean:
+                    continue
+                name = data.get("name", "")
+                brand = data.get("brand", "")
+                # Bild-URL für diesen Artikel (Handy lädt darüber das Bild)
+                image_url = f"/image/{ean}?t={int(time.time())}"
 
-            await websocket.send(json.dumps({
-                "ok": True,
-                "message": "Bild gespeichert",
-                "ean": ean,
-                "image_path": filepath
-            }))
+                last_article = {
+                    "ean": ean,
+                    "name": name,
+                    "brand": brand,
+                    "image_url": image_url,
+                }
 
-        except Exception as e:
-            print("Fehler im WebSocket-Server:", e)
-            await websocket.send(json.dumps({
-                "ok": False,
-                "message": f"Fehler: {e}"
-            }))
+                # an alle (vor allem Handy) senden
+                payload = {
+                    "type": "current_article",
+                    **last_article
+                }
+                await broadcast(payload)
+
+            # Handy: beim Verbinden aktuellen Artikel anfragen
+            elif msg_type == "request_current_article":
+                if last_article:
+                    payload = {
+                        "type": "current_article",
+                        **last_article
+                    }
+                    await websocket.send(json.dumps(payload))
+
+            # Handy: neues Bild hochladen
+            elif msg_type == "upload_image":
+                ean = data.get("ean")
+                image_b64 = data.get("image_base64")
+                if not ean or not image_b64:
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "message": "ean und image_base64 erforderlich"
+                    }))
+                    continue
+
+                filepath = save_image_for_ean(ean, image_b64)
+                image_url = f"/image/{ean}?t={int(time.time())}"
+
+                # last_article aktualisieren, falls es der gleiche Artikel ist
+                if last_article and last_article.get("ean") == ean:
+                    last_article["image_url"] = image_url
+
+                # allen Clients sagen, dass das Bild aktualisiert wurde
+                await broadcast({
+                    "type": "image_updated",
+                    "ean": ean,
+                    "image_url": image_url
+                })
+
+            else:
+                # unbekannter Typ -> ignorieren oder loggen
+                print("Unbekannter WebSocket-Typ:", msg_type)
+
+    finally:
+        connected_clients.discard(websocket)
+        print("WebSocket disconnected, clients:", len(connected_clients))
 
 
 def start_ws_server():
@@ -297,7 +410,7 @@ def start_ws_server():
 
 
 def start_http_server():
-    print("Starte Flask HTTP-Server auf http://0.0.0.0:8000/mobile")
+    print("Starte Flask HTTP-Server auf http://0.0.0.0:8000")
     flask_app.run(host="0.0.0.0", port=8000)
 
 
