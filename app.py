@@ -219,9 +219,17 @@ class Api:
 flask_app = Flask(__name__)
 
 
+#@flask_app.route("/mobile")
+#def mobile_page():
+#    return send_from_directory(MOBILE_VIEWS_DIR, "mobile.html")
+
+@flask_app.route("/")
+def root():
+    return "<h1>Server läuft 😊</h1><p>Ruf <code>/mobile</code> auf.</p>"
+
 @flask_app.route("/mobile")
 def mobile_page():
-    return send_from_directory(MOBILE_VIEWS_DIR, "mobile.html")
+    return "<h1>Mobile-Upload-Seite</h1><p>Die Route funktioniert.</p>"
 
 
 # ----------------- WebSocket-Server für Bildupload -----------------
