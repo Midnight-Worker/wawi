@@ -278,8 +278,9 @@ def main():
         js_api=api,
         width=800,
         height=600,
+		fullscreen=True
     )
-    webview.start(debug=True)
+    webview.start(debug=False)
 
 
 if __name__ == "__main__":
