@@ -2,161 +2,51 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>Artikelansicht (Mobile)</title>
+    <title>Mobile-View</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {
-            font-family: sans-serif;
-            padding: 1rem;
-        }
-        #product-image {
+        body { font-family: sans-serif; padding: 1rem; }
+        img {
             max-width: 100%;
-            border: 2px solid #ccc;
+            width: 200px;
+            height: 200px;
+            border: 1px solid #ccc;
             border-radius: 8px;
-            cursor: pointer;
+            display: block;
+            margin-top: 0.5rem;
+            object-fit: cover;
         }
-        #hint {
-            color: #555;
-            font-size: 0.9rem;
-        }
-        #info {
-            margin-bottom: 1rem;
-        }
-        label span {
-            font-weight: bold;
+        #info { margin-bottom: 1rem; }
+        #info span.label { font-weight: bold; }
+        #status { font-size: 0.9rem; color: #555; margin-bottom: 0.5rem; }
+        #log {
+            font-size: 0.8rem;
+            border: 1px solid #ccc;
+            padding: 0.5rem;
+            height: 100px;
+            overflow: auto;
+            white-space: pre-wrap;
         }
     </style>
 </head>
 <body>
-    <h1>Artikel (Mobile View)</h1>
+    <h1>Mobile-View</h1>
+
+    <div id="status">Verbindungsstatus: unbekannt</div>
 
     <div id="info">
-        <p><span>EAN:</span> <span id="ean">–</span></p>
-        <p><span>Name:</span> <span id="name">–</span></p>
-        <p><span>Marke:</span> <span id="brand">–</span></p>
+        <p><span class="label">EAN:</span> <span id="ean">–</span></p>
+        <p><span class="label">Name:</span> <span id="name">–</span></p>
     </div>
 
-    <p id="hint">Tippe auf das Bild, um ein Foto aufzunehmen oder zu ändern.</p>
+    <img id="product-image" src="/image/dummy" alt="Produktbild (antippen zum Fotografieren)">
 
-    <img id="product-image" src="" alt="Produktbild oder Platzhalter">
-
-    <!-- verstecktes File-Input zum Kamera öffnen -->
+    <!-- verborgenes File-Input, um die Kamera zu öffnen -->
     <input id="fileInput" type="file" accept="image/*" capture="environment" style="display:none">
 
     <h2>Log</h2>
-    <pre id="log" style="height:150px; overflow:auto; border:1px solid #ccc;"></pre>
+    <div id="log"></div>
 
-    <script>
-        const eanEl = document.getElementById("ean");
-        const nameEl = document.getElementById("name");
-        const brandEl = document.getElementById("brand");
-        const img = document.getElementById("product-image");
-        const fileInput = document.getElementById("fileInput");
-        const logEl = document.getElementById("log");
-
-        let currentArticle = null;
-        let wsMobile = null;
-
-        function log(msg) {
-            logEl.textContent += msg + "\n";
-            logEl.scrollTop = logEl.scrollHeight;
-        }
-
-        function connectWebSocketMobile() {
-            const wsUrl = "ws://" + window.location.hostname + ":8765";
-            wsMobile = new WebSocket(wsUrl);
-
-            wsMobile.onopen = () => {
-                log("Mobile-WS verbunden: " + wsUrl);
-                // Aktuellen Artikel anfordern
-                wsMobile.send(JSON.stringify({ type: "request_current_article" }));
-            };
-
-            wsMobile.onmessage = (e) => {
-                log("WS-Empfangen: " + e.data);
-                let data;
-                try {
-                    data = JSON.parse(e.data);
-                } catch (err) {
-                    return;
-                }
-
-                if (data.type === "current_article") {
-                    // kompletter Artikel vom Desktop
-                    currentArticle = {
-                        ean: data.ean,
-                        name: data.name,
-                        brand: data.brand,
-                        image_url: data.image_url
-                    };
-                    renderArticle(currentArticle);
-                } else if (data.type === "image_updated") {
-                    // Bild für bestimmte EAN wurde aktualisiert
-                    if (currentArticle && currentArticle.ean === data.ean) {
-                        currentArticle.image_url = data.image_url;
-                        updateImage(currentArticle.image_url);
-                    }
-                }
-            };
-
-            wsMobile.onclose = () => log("Mobile-WS geschlossen.");
-            wsMobile.onerror = (e) => log("Mobile-WS Fehler: " + e);
-        }
-
-        function renderArticle(article) {
-            eanEl.textContent = article.ean || "–";
-            nameEl.textContent = article.name || "–";
-            brandEl.textContent = article.brand || "–";
-            updateImage(article.image_url);
-        }
-
-        function updateImage(imageUrl) {
-            if (!imageUrl) return;
-            // relativer Pfad vom Server, einfach übernehmen
-            img.src = imageUrl;
-        }
-
-        // Klick auf Bild -> Kamera öffnen (wenn Artikel vorhanden)
-        img.onclick = () => {
-            if (!currentArticle || !currentArticle.ean) {
-                log("Kein aktueller Artikel, noch nichts vom Desktop empfangen.");
-                return;
-            }
-            fileInput.click();
-        };
-
-        // Wenn Bild gewählt -> per WebSocket an Server senden
-        fileInput.onchange = () => {
-            const file = fileInput.files[0];
-            if (!file) {
-                log("Kein Bild gewählt.");
-                return;
-            }
-            if (!currentArticle || !currentArticle.ean) {
-                log("Kein aktueller Artikel gesetzt.");
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onload = () => {
-                const base64Data = reader.result.split(",")[1]; // 'data:image/...;base64,...'
-                const payload = {
-                    type: "upload_image",
-                    ean: currentArticle.ean,
-                    image_base64: base64Data
-                };
-
-                if (wsMobile && wsMobile.readyState === WebSocket.OPEN) {
-                    wsMobile.send(JSON.stringify(payload));
-                    log("Bild für EAN " + currentArticle.ean + " gesendet.");
-                } else {
-                    log("WebSocket nicht verbunden.");
-                }
-            };
-            reader.readAsDataURL(file);
-        };
-
-        window.addEventListener("load", connectWebSocketMobile);
-    </script>
+    <script src="/public/js/mobile.js"></script>
 </body>
 </html>

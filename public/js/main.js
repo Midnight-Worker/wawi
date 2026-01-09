@@ -1,86 +1,85 @@
-window.addEventListener('pywebviewready', function () {
+        let wsDesktop = null;
 
-const input = document.getElementById('ean-input');
-const resultDiv = document.getElementById('result');
-const manualSection = document.getElementById('manual-section');
-const manualEanLabel = document.getElementById('manual-ean-label');
-const manualName = document.getElementById('manual-name');
-const manualBrand = document.getElementById('manual-brand');
-const manualSaveBtn = document.getElementById('manual-save-btn');
-const manualMessage = document.getElementById('manual-message');
+        function connectWebSocketDesktop() {
+            const wsUrl = "ws://127.0.0.1:8765";
+            wsDesktop = new WebSocket(wsUrl);
 
-let lastEan = "";
-
-function showResult(data) {
-    // immer erstmal die manuelle Sektion ausblenden
-    manualSection.style.display = 'none';
-    manualMessage.textContent = '';
-
-    if (!data.ok) {
-        resultDiv.innerHTML = '<p class="error">' + (data.message || 'Unbekannter Fehler') + '</p>';
-
-        // Manuelles Formular anzeigen
-        lastEan = data.ean;
-        manualEanLabel.textContent = 'EAN: ' + data.ean;
-        manualName.value = '';
-        manualBrand.value = '';
-        manualSection.style.display = 'block';
-        return;
-    }
-
-    resultDiv.innerHTML = `
-        <p><strong>Quelle:</strong> ${data.source}</p>
-        <p><strong>EAN:</strong> ${data.ean}</p>
-        <p><strong>Name:</strong> ${data.name}</p>
-        <p><strong>Marke:</strong> ${data.brand || '-'}</p>
-    `;
-}
-
-input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') {
-        const ean = input.value.trim();
-        if (!ean) return;
-
-        lastEan = ean;
-        resultDiv.innerHTML = '<p>Suche nach ' + ean + ' ...</p>';
-        manualSection.style.display = 'none';
-        manualMessage.textContent = '';
-
-        if (window.pywebview && window.pywebview.api) {
-            window.pywebview.api.lookup_ean(ean).then(showResult);
-        } else {
-            resultDiv.innerHTML = '<p class="error">pywebview API nicht verfügbar.</p>';
+            wsDesktop.onopen = () => {
+                console.log("Desktop-WS verbunden:", wsUrl);
+            };
+            wsDesktop.onclose = () => console.log("Desktop-WS geschlossen");
+            wsDesktop.onerror = (e) => console.log("Desktop-WS Fehler:", e);
+            wsDesktop.onmessage = (e) => console.log("Desktop-WS Nachricht:", e.data);
         }
 
-        input.value = '';
-    }
-});
+        window.addEventListener("load", () => {
+            connectWebSocketDesktop();
 
-// Produkt speichern-Button
-manualSaveBtn.addEventListener('click', function () {
-    const name = manualName.value.trim();
-    const brand = manualBrand.value.trim();
+            const eanInput = document.getElementById("ean");
 
-    if (!lastEan || !name) {
-        manualMessage.textContent = 'Bitte mindestens EAN (per Scan) und Name angeben.';
-        return;
-    }
+            // Beim Start direkt ins EAN-Feld fokussieren
+            eanInput.focus();
 
-    if (window.pywebview && window.pywebview.api) {
-        window.pywebview.api.save_product(lastEan, name, brand).then(function (res) {
-            if (res.ok) {
-                manualMessage.textContent = 'Gespeichert.';
-            } else {
-                manualMessage.textContent = 'Fehler: ' + (res.message || 'Unbekannt');
-            }
+            // Enter im EAN-Feld -> lookup()
+            eanInput.addEventListener("keydown", (ev) => {
+                if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    lookup();
+                }
+            });
         });
-    } else {
-        manualMessage.textContent = 'pywebview API nicht verfügbar.';
-    }
-});
 
-// Fokus im Feld halten
-window.addEventListener('click', () => input.focus());
+        async function lookup() {
+            const eanInput = document.getElementById("ean");
+            const ean = eanInput.value.trim();
+            if (!ean) {
+                alert("Bitte EAN eingeben.");
+                return;
+            }
 
+            // pywebview-Backend aufrufen
+            const result = await window.pywebview.api.lookup_ean(ean);
 
-});
+            // Formular & Anzeige aktualisieren
+            document.getElementById("ean").value = result.ean || "";
+            document.getElementById("name").value = result.name || "";
+            document.getElementById("db-result").textContent =
+                JSON.stringify(result, null, 2);
+
+            // Bild anzeigen: über den HTTP-Endpoint /image/<ean>
+            const img = document.getElementById("product-image");
+            if (result.ean) {
+                // Cache-Buster dran, falls gerade neues Bild hochgeladen wurde
+                img.src = "http://127.0.0.1:8000/image/" + encodeURIComponent(result.ean) + "?t=" + Date.now();
+                img.style.display = "block";
+            } else {
+                img.src = "";
+                img.style.display = "none";
+            }
+
+            // aktuellen Artikel an WS-Server senden (für Mobile)
+            if (wsDesktop && wsDesktop.readyState === WebSocket.OPEN) {
+                const payload = {
+                    type: "set_article",
+                    ean: result.ean,
+                    name: result.name
+                };
+                wsDesktop.send(JSON.stringify(payload));
+            }
+
+            // EAN-Feld wieder fokussieren und komplett selektieren
+            eanInput.focus();
+            eanInput.select();
+        }
+
+        async function saveManual() {
+            const eanInput = document.getElementById("ean");
+            const ean = eanInput.value.trim();
+            const name = document.getElementById("name").value.trim();
+            const res = await window.pywebview.api.save_product(ean, name);
+            alert(res.message || "OK");
+
+            // Nach dem Speichern wieder bereit für den nächsten Scan
+            eanInput.focus();
+            eanInput.select();
+        }
