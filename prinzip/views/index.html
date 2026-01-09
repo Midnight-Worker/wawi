@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Desktop (pywebview)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        let wsDesktop = null;
+
+        function connectWebSocketDesktop() {
+            const wsUrl = "ws://127.0.0.1:8765";
+            wsDesktop = new WebSocket(wsUrl);
+
+            wsDesktop.onopen = () => {
+                console.log("Desktop-WS verbunden:", wsUrl);
+            };
+            wsDesktop.onclose = () => console.log("Desktop-WS geschlossen");
+            wsDesktop.onerror = (e) => console.log("Desktop-WS Fehler:", e);
+            wsDesktop.onmessage = (e) => console.log("Desktop-WS Nachricht:", e.data);
+        }
+
+        window.addEventListener("load", () => {
+            connectWebSocketDesktop();
+
+            const eanInput = document.getElementById("ean");
+
+            // Beim Start direkt ins EAN-Feld fokussieren
+            eanInput.focus();
+
+            // Enter im EAN-Feld -> lookup()
+            eanInput.addEventListener("keydown", (ev) => {
+                if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    lookup();
+                }
+            });
+        });
+
+        async function lookup() {
+            const eanInput = document.getElementById("ean");
+            const ean = eanInput.value.trim();
+            if (!ean) {
+                alert("Bitte EAN eingeben.");
+                return;
+            }
+
+            // pywebview-Backend aufrufen
+            const result = await window.pywebview.api.lookup_ean(ean);
+
+            // Formular & Anzeige aktualisieren
+            document.getElementById("ean").value = result.ean || "";
+            document.getElementById("name").value = result.name || "";
+            document.getElementById("db-result").textContent =
+                JSON.stringify(result, null, 2);
+
+            // Bild anzeigen, falls image_path vorhanden
+            const img = document.getElementById("product-image");
+            if (result.image_path) {
+                img.src = "file://" + result.image_path;
+                img.style.display = "block";
+            } else {
+                img.src = "";
+                img.style.display = "none";
+            }
+
+            // aktuellen Artikel an WS-Server senden (für Mobile)
+            if (wsDesktop && wsDesktop.readyState === WebSocket.OPEN) {
+                const payload = {
+                    type: "set_article",
+                    ean: result.ean,
+                    name: result.name
+                };
+                wsDesktop.send(JSON.stringify(payload));
+            }
+
+            // EAN-Feld wieder fokussieren und komplett selektieren
+            eanInput.focus();
+            eanInput.select();
+        }
+
+        async function saveManual() {
+            const eanInput = document.getElementById("ean");
+            const ean = eanInput.value.trim();
+            const name = document.getElementById("name").value.trim();
+            const res = await window.pywebview.api.save_product(ean, name);
+            alert(res.message || "OK");
+
+            // Nach dem Speichern wieder bereit für den nächsten Scan
+            eanInput.focus();
+            eanInput.select();
+        }
+    </script>
+</head>
+<body>
+    <h1>Desktop (pywebview)</h1>
+
+    <p>
+        <label>EAN:
+            <input id="ean" type="text" placeholder="EAN eingeben oder scannen">
+        </label>
+        <button onclick="lookup()">Lookup</button>
+    </p>
+
+    <p>
+        <label>Name:
+            <input id="name" type="text" size="40">
+        </label>
+        <button onclick="saveManual()">In DB speichern</button>
+    </p>
+
+    <h2>DB-Eintrag</h2>
+    <pre id="db-result" style="border:1px solid #ccc; padding:0.5rem; min-height:4rem;"></pre>
+
+    <h2>Bild</h2>
+    <img id="product-image" alt="Produktbild" style="max-width:200px; display:none;">
+</body>
+</html>
