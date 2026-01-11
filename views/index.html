@@ -4,49 +4,58 @@
     <meta charset="UTF-8">
     <title>Desktop (pywebview)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../public/css/main.css" />
 </head>
+
 <body>
-    <div style="
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        text-align: center;
-        background: #fff;
-        padding: 0.5rem;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        box-shadow: 0 0 5px rgba(0,0,0,0.15);
-        font-size: 0.8rem;
-        z-index: 9999;
-    ">
-        <div>Mobile-Ansicht</div>
-        <img
-            src="http://127.0.0.1:8000/qr"
-            alt="QR-Code Mobile-Ansicht"
-            style="width: 120px; height: 120px; margin-top: 0.25rem;"
-        >
+    <button id="reloadbutton">
+        <h1>Reload</h1>
+    </button>
+
+    <!-- NEU: Modus-Umschalter, sonst alles wie vorher -->
+    <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #ccc;">
+        <button type="button" onclick="window.location.href='/desktop_alt';">
+            👉 In den Eingabemodus wechseln
+        </button>
     </div>
-    <h1>Desktop (pywebview)</h1>
 
-    <p>
-        <label>EAN:
-            <input id="ean" type="text" placeholder="EAN eingeben oder scannen">
+    <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #ccc;">
+        <label>
+            <input type="checkbox" id="toggle-online-lookup" checked>
+            Automatische Online-Suche aktiv
         </label>
-        <button onclick="lookup()">Lookup</button>
-    </p>
+    </div>
 
-    <p>
-        <label>Name:
-            <input id="name" type="text" size="40">
-        </label>
-        <button onclick="saveManual()">In DB speichern</button>
-    </p>
+    <div class="qrcode">
+        <div>Mobile-Ansicht</div>
+        <img class="qrcode" src="http://127.0.0.1:8000/qr" alt="QR-Code Mobile-Ansicht">
+    </div>
 
-    <h2>DB-Eintrag</h2>
-    <pre id="db-result" style="border:1px solid #ccc; padding:0.5rem; min-height:4rem;"></pre>
+    <div id="container">
+        <h1 id="annahme">Warenannahme B7</h1>
 
-    <h2>Bild</h2>
-    <img id="product-image" alt="Produktbild" style="max-width:200px; display:none;">
+        <p>
+            <label>EAN:
+                <input id="ean" type="text" placeholder="EAN eingeben oder scannen">
+            </label>
+            <button onclick="lookup()">Lookup</button>
+        </p>
+
+        <p>
+            <label>Name:
+                <input id="name" type="text" size="40">
+            </label>
+            <button onclick="saveManual()">In DB speichern</button>
+        </p>
+
+        <!--<h2>DB-Eintrag</h2>-->
+        <pre id="db-result" style="display: none;"></pre>
+
+        <h2>Bild</h2>
+        <img id="product-image" alt="Produktbild">
+    </div>
+
+    <script src="../public/libs/jquery.js"></script>
     <script src="../public/js/main.js"></script>
 </body>
 </html>
