@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Ebene_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" viewBox="0 0 455.7 328.6">
+  <!-- Generator: Adobe Illustrator 29.2.1, SVG Export Plug-In . SVG Version: 2.1.0 Build 116)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: none;
+      }
+
+      .st1 {
+        fill: #00aec2;
+      }
+
+      .st2 {
+        fill: #fbba00;
+      }
+
+      .st3 {
+        fill: #94c11a;
+      }
+
+      .st4 {
+        clip-path: url(#clippath-1);
+      }
+
+      .st5 {
+        clip-path: url(#clippath-2);
+      }
+
+      .st6 {
+        fill: #e5005b;
+      }
+
+      .st7 {
+        clip-path: url(#clippath);
+      }
+    </style>
+    <clipPath id="clippath">
+      <rect class="st0" x="138.8" y="178.2" width="169.9" height="130.5" transform="translate(-20.5 466.3) rotate(-89.8)"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <rect class="st0" x="278.9" y="149.4" width="170.4" height="130.8" transform="translate(-26 377.7) rotate(-53.2)"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <rect class="st0" x="211.4" y="8.3" width="130.8" height="170.4" transform="translate(35.9 258.7) rotate(-53.1)"/>
+    </clipPath>
+  </defs>
+  <g class="st7">
+    <path class="st1" d="M202.1,228.9l-42.7-.2-.4,91.2h6.3l36.7-91h0ZM282.8,199.9c.3-20.5-15.5-39.1-34.8-40.2l-88.3-.4-.2,38.8,92.4.4h.1l-47,121.6,40.9.2h0c23.5-.5,42.6-19.3,42.9-42.9.3-19.2-11.9-35.7-29-41.9,13.4-6.3,22.7-19.9,22.9-35.6"/>
+  </g>
+  <g class="st4">
+    <path class="st3" d="M355.3,190.2l-34.2-25.7-54.8,73.2,5.1,3.8,84-51.3h0ZM437.6,215.1c12.5-16.3,10.9-40.7-4-53.1l-70.9-53.1-23.3,31.2,74.1,55.5h0c0,0-110.5,69.9-110.5,69.9l32.8,24.6h0c19.2,13.7,45.8,10,60.2-8.9,11.7-15.3,11.8-35.8,1.6-51.1,14.6,2.9,30.2-2.4,39.7-15"/>
+  </g>
+  <g class="st5">
+    <path class="st6" d="M252.7,102.9l-25.7,34.2,73.1,55,3.8-5.1-51.2-84.1h0ZM277.7,20.6c-16.3-12.5-40.7-11-53.1,3.9l-53.3,70.8,31.1,23.4,55.7-74h0c0,0,69.6,110.6,69.6,110.6l24.6-32.8h0c13.7-19.2,10.1-45.8-8.8-60.2-15.3-11.7-35.8-11.8-51-1.7,2.9-14.6-2.4-30.2-14.9-39.8"/>
+  </g>
+  <path class="st2" d="M72.7,183.9l-41.7-9.6-20.5,89.1,6.2,1.4,56-81h0ZM158.1,173.2c4.8-20-6.6-41.6-25.2-46.9l-86.3-19.9-8.7,37.9,90.3,20.7h.1s-72.8,108.6-72.8,108.6l40,9.2h0c23.1,4.7,45.9-9.4,51.5-32.5,4.5-18.7-3.8-37.5-19.2-47.3,14.5-3.2,26.6-14.4,30.3-29.8"/>
+</svg>
