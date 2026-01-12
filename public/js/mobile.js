@@ -109,6 +109,73 @@ function renderArticle(article, imageBase64) {
     }
 }
 
+
+async function lookupAndRenderArticle(ean, imageBase64FromWs) {
+    try {
+        // 1) Artikel-Daten aus der API holen
+        const res = await fetch("/api/lookup_ean?ean=" + encodeURIComponent(ean));
+        const data = await res.json();
+
+        const finalEan = data.ean || ean || "";
+        const finalName =
+            data.name ||
+            (currentArticle && currentArticle.name) ||
+            "";
+
+        // globalen State aktualisieren
+        currentArticle = {
+            ean: finalEan,
+            name: finalName,
+        };
+
+        // EAN & Name in die Felder schreiben
+        if (eanEl) {
+            eanEl.textContent = finalEan || "–";
+        }
+        if (nameEl) {
+            nameEl.value = finalName;
+        }
+
+        // Menge aus DB übernehmen (falls vorhanden), sonst 1
+        if (qtyEl) {
+            if (
+                data.qty != null &&
+                !isNaN(data.qty) &&
+                data.qty > 0
+            ) {
+                qtyEl.value = String(data.qty);
+            } else {
+                qtyEl.value = "1";
+            }
+        }
+
+        // Shop aus DB übernehmen (falls vorhanden)
+        if (data.shop_id) {
+            lastSelectedShopId = String(data.shop_id);
+
+            if (shopSelectEl) {
+                shopSelectEl.value = lastSelectedShopId;
+            }
+        }
+
+        // Bild setzen: erst WS-Bild, sonst normales /image/<ean>
+        if (imageBase64FromWs) {
+            imgEl.src = "data:image/jpeg;base64," + imageBase64FromWs;
+        } else {
+            updateImage(finalEan);
+        }
+    } catch (e) {
+        log("lookupAndRenderArticle Fehler: " + e);
+        // Fallback: wenigstens das anzeigen, was wir vom WS kennen
+        if (currentArticle) {
+            renderArticle(currentArticle, imageBase64FromWs);
+        } else {
+            renderArticle({ ean: ean, name: "" }, imageBase64FromWs);
+        }
+    }
+}
+
+
 // ------------------------------------------------------------
 // Artikel speichern (/api/save_item)
 // ------------------------------------------------------------
@@ -223,7 +290,8 @@ function connectWebSocketMobile() {
 
             case "current_article":
                 currentArticle = { ean: data.ean, name: data.name };
-                renderArticle(currentArticle, data.image_base64);
+                // statt direkt renderArticle -> DB-Lookup + Rendering
+                lookupAndRenderArticle(currentArticle.ean, data.image_base64);
                 break;
 
             case "image_updated":
