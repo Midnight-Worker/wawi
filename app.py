@@ -13,6 +13,7 @@ import webview
 from flask import Flask, send_file, send_from_directory, request, jsonify
 import qrcode
 import websockets
+import requests
 
 from PIL import Image
 import nfc  # aktuell ungenutzt, aber ok
@@ -52,6 +53,19 @@ DB_CONFIG = {
     "password": "poke",         # ANPASSEN
     "database": "wawi_b7",
 }
+
+# ------------------------------------------------------------
+# Online-EAN-Quellen (optional)
+# ------------------------------------------------------------
+
+# Open Food Facts: frei nutzbar, kein Key nötig
+OPENFOODFACTS_BASE_URL = "https://world.openfoodfacts.org/api/v0/product"
+
+# OpenGTINDB / Open EAN Database:
+# http://opengtindb.org/?ean=[ean]&cmd=query&queryid=[userid]
+# queryid musst du dir ggf. dort registrieren.
+OPENGTINDB_QUERY_ID = ""  # z.B. "123456789" – leer lassen zum Deaktivieren
+
 
 # ------------------------------------------------------------
 # WebSocket-Globals
@@ -662,26 +676,168 @@ class Api:
         cur.close()
         conn.close()
 
+
+
     def lookup_ean(self, ean: str, use_online: bool = False):
         ean = (ean or "").strip()
         if not ean:
-            return {"ean": "", "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+            return {
+                "ean": "",
+                "name": "",
+                "image_path": "",
+                "qty": 0.0,
+                "shop_id": None,
+                "source": "none",
+            }
 
+        # 1) Lokale DB zuerst
         row = self._db_get_product(ean)
         if row:
             row["source"] = "local"
             return row
 
-        # optionale externe DB (noch TODO, aber use_online ist da)
+        # 2) Optional: Online-Lookup
         if use_online:
-            # Hier kommt später dein Online-Lookup hin (OpenFoodFacts o.Ä.)
-            # online = self._lookup_ean_online(ean)
-            # if online:
-            #     online["source"] = "online"
-            #     return online
-            pass
+            online = self._lookup_ean_online(ean)
+            if online and online.get("name"):
+                # Ergebnis in lokale DB cachen, damit spätere Abfragen offline gehen
+                try:
+                    self._db_save_product(
+                        ean=ean,
+                        name=online["name"],
+                        shop_id=None,
+                        qty=0.0,
+                        last_user_id=None,
+                    )
+                    print(f"[lookup_ean] Online-Ergebnis für {ean} lokal gespeichert.")
+                except Exception as exc:
+                    print(f"[lookup_ean] Fehler beim lokalen Speichern von Online-Ergebnis: {exc}")
 
-        return {"ean": ean, "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+                return online
+
+        # 3) Nichts gefunden
+        return {
+            "ean": ean,
+            "name": "",
+            "image_path": "",
+            "qty": 0.0,
+            "shop_id": None,
+            "source": "none",
+        }
+
+
+
+    def _lookup_ean_online(self, ean: str):
+        """
+        Versucht, für eine EAN einen Produktnamen aus freien Online-Datenbanken
+        zu holen. Momentan:
+          1) Open Food Facts
+          2) Optional: OpenGTINDB (wenn OPENGTINDB_QUERY_ID gesetzt ist)
+        Gibt bei Erfolg ein Dict im gleichen Format wie _db_get_product()
+        (plus 'source') zurück oder None, wenn nichts gefunden wurde.
+        """
+        # 1) Open Food Facts
+        try:
+            url = f"{OPENFOODFACTS_BASE_URL}/{ean}.json"
+            r = requests.get(url, timeout=3)
+            if r.status_code == 200:
+                data = r.json()
+                # status == 1 -> Produkt gefunden :contentReference[oaicite:2]{index=2}
+                if data.get("status") == 1:
+                    product = data.get("product", {}) or {}
+                    name = (product.get("product_name") or "").strip()
+                    generic = (product.get("generic_name") or "").strip()
+                    brands = (product.get("brands") or "").strip()
+
+                    # sinnvoller Name:
+                    # Priorität: product_name, sonst generic_name
+                    base_name = name or generic
+
+                    full_name = base_name
+                    # Brand vorne anhängen, falls noch nicht im Namen
+                    if brands and base_name:
+                        if brands.lower() not in base_name.lower():
+                            full_name = f"{brands} {base_name}"
+                    elif brands and not base_name:
+                        full_name = brands
+
+                    if full_name:
+                        print(f"[online] OpenFoodFacts: {ean} -> {full_name}")
+                        return {
+                            "ean": ean,
+                            "name": full_name,
+                            "image_path": "",
+                            "qty": 0.0,
+                            "shop_id": None,
+                            "last_user_id": None,
+                            "last_change_at": None,
+                            "source": "online_off",
+                        }
+        except Exception as exc:
+            print(f"[online] OpenFoodFacts Fehler für {ean}: {exc}")
+
+        # 2) OpenGTINDB / Open EAN Database (optional)
+        if OPENGTINDB_QUERY_ID:
+            try:
+                params = {
+                    "ean": ean,
+                    "cmd": "query",
+                    "queryid": OPENGTINDB_QUERY_ID,
+                }
+                r = requests.get("http://opengtindb.org/", params=params, timeout=3)
+                if r.status_code == 200:
+                    text = r.text
+                    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+                    error_code = None
+                    fields = {}
+
+                    for ln in lines:
+                        if ln.startswith("---"):
+                            # erster Datensatz reicht uns
+                            break
+                        if "=" in ln:
+                            k, v = ln.split("=", 1)
+                            k = k.strip()
+                            v = v.strip()
+                            if k == "error":
+                                error_code = v
+                            else:
+                                fields[k] = v
+
+                    if error_code == "0":
+                        # Name bauen: detailname > name; optional vendor voranstellen
+                        detailname = fields.get("detailname", "").strip()
+                        name = fields.get("name", "").strip()
+                        vendor = fields.get("vendor", "").strip()
+
+                        base_name = detailname or name
+                        full_name = base_name
+                        if vendor and base_name:
+                            if vendor.lower() not in base_name.lower():
+                                full_name = f"{vendor} {base_name}"
+                        elif vendor and not base_name:
+                            full_name = vendor
+
+                        if full_name:
+                            print(f"[online] OpenGTINDB: {ean} -> {full_name}")
+                            return {
+                                "ean": ean,
+                                "name": full_name,
+                                "image_path": "",
+                                "qty": 0.0,
+                                "shop_id": None,
+                                "last_user_id": None,
+                                "last_change_at": None,
+                                "source": "online_opengtindb",
+                            }
+            except Exception as exc:
+                print(f"[online] OpenGTINDB Fehler für {ean}: {exc}")
+
+        # nichts gefunden
+        return None
+
+
 
     def get_shops(self):
         """
@@ -968,3 +1124,27 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+"""
+    def lookup_ean(self, ean: str, use_online: bool = False):
+        ean = (ean or "").strip()
+        if not ean:
+            return {"ean": "", "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+
+        row = self._db_get_product(ean)
+        if row:
+            row["source"] = "local"
+            return row
+
+        # optionale externe DB (noch TODO, aber use_online ist da)
+        if use_online:
+            # Hier kommt später dein Online-Lookup hin (OpenFoodFacts o.Ä.)
+            # online = self._lookup_ean_online(ean)
+            # if online:
+            #     online["source"] = "online"
+            #     return online
+            pass
+
+        return {"ean": ean, "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+"""
