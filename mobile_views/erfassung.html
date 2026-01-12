@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Artikel-Erfassung</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="../public/css/erfassung.css" />
+</head>
+<body>
+  <header>
+    <div class="user" id="userDisplay">Nicht eingeloggt</div>
+    <button id="logoutBtn" type="button">Logout</button>
+  </header>
+
+  <main>
+    <!-- Übersichts-Karte: wartet auf neuen Scan -->
+    <section class="card" id="overviewStep">
+      <h2 style="margin-top:0;">Artikel-Erfassung</h2>
+      <p>Bitte mit dem Scanner eine <strong>EAN</strong> scannen. Das Eingabefeld ist fokussiert.</p>
+      <label for="eanInput">EAN</label>
+      <input
+        type="text"
+        id="eanInput"
+        inputmode="numeric"
+        autocomplete="off"
+        placeholder="EAN scannen oder eingeben..."
+      />
+      <div class="hint">
+        Der Barcode-Scanner sollte automatisch Enter senden. Dann startet der Erfassungsdialog.
+      </div>
+      <div class="status" id="overviewStatus"></div>
+    </section>
+
+    <!-- Dialog-Karte: geführter Ablauf -->
+    <section class="card hidden" id="wizardStep">
+      <div class="steps">
+        <div class="step" data-step="scan">1<br /><span>Scan</span></div>
+        <div class="step" data-step="name">2<br /><span>Name</span></div>
+        <div class="step" data-step="foto">3<br /><span>Foto</span></div>
+        <div class="step" data-step="shop">4<br /><span>Shop</span></div>
+        <div class="step" data-step="qty">5<br /><span>Anzahl</span></div>
+      </div>
+
+      <!-- Scan-Teil (nur kurz sichtbar) -->
+      <div id="stepScan" class="wizard-page">
+        <p>EAN: <strong id="currentEanDisplay"></strong></p>
+        <p>Prüfe interne Datenbank…</p>
+      </div>
+
+      <!-- Name -->
+      <div id="stepName" class="wizard-page hidden">
+        <label for="nameInput">Artikelname</label>
+        <input type="text" id="nameInput" autocomplete="off" />
+        <div class="hint">
+          Falls der Name aus der internen oder externen Datenbank kommt, kannst du ihn hier noch anpassen.
+        </div>
+      </div>
+
+      <!-- Foto -->
+      <div id="stepFoto" class="wizard-page hidden">
+        <div class="image-preview" id="imagePreview">
+          <img id="itemImage" src="" alt="Artikelbild"  />
+        </div>
+        <label for="imageInput">Foto aufnehmen/hochladen</label>
+        <input type="file" id="imageInput" accept="image/*;capture=camera" />
+        <div class="hint">
+          Wähle ein Bild aus oder mache ein Foto. Es wird automatisch dem Artikel zugeordnet.
+        </div>
+      </div>
+
+      <!-- Shop -->
+      <div id="stepShop" class="wizard-page hidden">
+        <label for="shopSelect">Shop</label>
+        <select id="shopSelect"></select>
+        <div class="hint">
+          Falls du später mehrere Shops nutzt, kann hier z.B. Supermarkt / Online-Shop gewählt werden.
+        </div>
+      </div>
+
+      <!-- Anzahl -->
+      <div id="stepQty" class="wizard-page hidden">
+        <label for="qtyInput">Menge / Anzahl</label>
+        <input type="number" id="qtyInput" step="0.01" min="0" value="1" />
+        <div class="hint">
+          Für Stückware einfach 1, für z.B. Kilogramm oder Liter gerne mit Kommawerten arbeiten.
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="secondary" type="button" id="backBtn">Zurück</button>
+        <button class="primary" type="button" id="nextBtn">Weiter</button>
+      </div>
+
+      <div class="status" id="wizardStatus"></div>
+    </section>
+
+    <!-- Optional: einfache Historie (letzte paar Artikel) -->
+    <section class="card overview">
+      <h3 style="margin-top:0;">Letzte erfasste Artikel</h3>
+      <div id="recentList">
+        <div class="overview-item">– Noch keine Artikel in dieser Session –</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="../public/js/erfassung.js"></script>
+</body>
+</html>

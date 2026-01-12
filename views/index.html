@@ -12,11 +12,18 @@
         <h1>Reload</h1>
     </button>
 
-    <!-- NEU: Modus-Umschalter, sonst alles wie vorher -->
-    <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #ccc;">
-        <button type="button" onclick="window.location.href='/desktop_alt';">
-            👉 In den Eingabemodus wechseln
-        </button>
+    <!-- Modus-Anzeige -->
+    <div id="mode-indicator" style="padding: 0.3rem 1rem; background: #eef; border-bottom: 1px solid #ccc;">
+        Modus: Scanmodus (keine Karte aufgelegt)
+    </div>
+
+    <div id="session-controls" style="color:red; margin-left: 280px; padding: 0.3rem 1rem; border-bottom: 1px solid #ccc;">
+        <label>
+            Session-Timeout (Minuten):
+            <input id="session-timeout" type="number" min="0" max="480" value="30" style="width: 4em;">
+        </label>
+        <button id="logout-btn" type="button">Logout</button>
+        <small style="margin-left: 0.5rem;">0 = kein Auto-Logout</small>
     </div>
 
     <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #ccc;">
@@ -48,7 +55,6 @@
             <button onclick="saveManual()">In DB speichern</button>
         </p>
 
-        <!--<h2>DB-Eintrag</h2>-->
         <pre id="db-result" style="display: none;"></pre>
 
         <h2>Bild</h2>

@@ -4,6 +4,8 @@ import asyncio
 import json
 import base64
 import time
+import serial
+from datetime import datetime, timedelta, timezone
 
 from io import BytesIO
 
@@ -13,6 +15,7 @@ import qrcode
 import websockets
 
 from PIL import Image
+import nfc  # aktuell ungenutzt, aber ok
 
 import mysql.connector
 from mysql.connector import Error
@@ -27,6 +30,7 @@ IMAGE_DIR = os.path.join(BASE_DIR, "images")
 VIEWS_DIR = os.path.join(BASE_DIR, "views")
 MOBILE_VIEWS_DIR = os.path.join(BASE_DIR, "mobile_views")
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+API_INSTANCE = None
 
 # Mobile-URL für den QR-Code
 MOBILE_URL = "http://192.168.0.30:8000/mobile"
@@ -45,9 +49,17 @@ DUMMY_IMAGE_PATH = os.path.join(IMAGE_DIR, "dummy.png")
 DB_CONFIG = {
     "host": "localhost",
     "user": "wawi_user",        # ANPASSEN
-    "password": "poke",# ANPASSEN
+    "password": "poke",         # ANPASSEN
     "database": "wawi_b7",
 }
+
+# ------------------------------------------------------------
+# WebSocket-Globals
+# ------------------------------------------------------------
+
+connected_clients = set()
+last_article = None  # {"ean": "...", "name": "..."}
+WS_LOOP = None       # Event-Loop des WS-Servers
 
 
 def get_db_connection():
@@ -93,15 +105,19 @@ def desktop_page():
     return send_from_directory(VIEWS_DIR, "index.html")
 
 
-@flask_app.route("/desktop_alt")
-def desktop_alt_page():
-    return send_from_directory(VIEWS_DIR, "desktop_alternative.html")
-
+@flask_app.route("/desktop_input")
+def desktop_input_page():
+    return send_from_directory(VIEWS_DIR, "desktop_eingabe.html")
 
 
 @flask_app.route("/mobile")
 def mobile_page():
     return send_from_directory(MOBILE_VIEWS_DIR, "mobile.html")
+
+
+@flask_app.route("/mobile/erfassung")
+def mobile_erfassung_page():
+    return send_from_directory(MOBILE_VIEWS_DIR, "erfassung.html")
 
 
 @flask_app.route("/image/<ean>")
@@ -167,24 +183,186 @@ def upload_image_http(ean):
         return jsonify({"ok": False, "message": "Fehler beim Speichern"}), 500
 
 
+@flask_app.route("/api/current_user")
+def api_current_user():
+    """
+    Wird von mobile.js per fetch() aufgerufen, um zu sehen,
+    ob jemand eingeloggt ist und wie der Timeout ist.
+    """
+    global API_INSTANCE
+    if API_INSTANCE is None:
+        return jsonify({
+            "user_id": None,
+            "user_name": "",
+            "timeout_minutes": 0,
+            "expires_at": None,
+        })
+    return jsonify(API_INSTANCE.get_current_user())
+
+
+@flask_app.route("/api/shops")
+def api_shops():
+    """
+    Liefert eine einfache Shop-Liste für das Dropdown im Handy.
+    Erwartet eine Tabelle 'shops(id, name, ...)'.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM shops ORDER BY name")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Error as e:
+        print(f"[api_shops] DB-Fehler: {e}")
+        return jsonify({"shops": []}), 500
+
+    shops = [{"id": row[0], "name": row[1]} for row in rows]
+    return jsonify({"shops": shops})
+
+
+@flask_app.route("/api/save_item", methods=["POST"])
+def api_save_item():
+    """
+    Speichert Artikel-Daten (Name, Menge, Shop) und setzt last_user_id / last_change_at.
+    Wird von der Mobile-View aufgerufen.
+    """
+    global API_INSTANCE
+    data = request.get_json(silent=True) or {}
+
+    ean = (data.get("ean") or "").strip()
+    name = (data.get("name") or "").strip()
+    qty = data.get("qty")
+    shop_id = data.get("shop_id")
+
+    if not ean:
+        return jsonify({"ok": False, "message": "EAN fehlt"}), 400
+
+    try:
+        qty_val = float(qty)
+    except (TypeError, ValueError):
+        qty_val = 0.0
+
+    try:
+        shop_id_val = int(shop_id) if shop_id is not None else None
+    except (TypeError, ValueError):
+        shop_id_val = None
+
+    user_id = None
+    if API_INSTANCE and API_INSTANCE.current_user_id is not None:
+        user_id = API_INSTANCE.current_user_id
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT id, name FROM items WHERE ean = %s", (ean,))
+        row = cur.fetchone()
+
+        if row:
+            item_id = row[0]
+            if not name:
+                name = row[1] or ""
+
+            cur.execute(
+                """
+                UPDATE items
+                SET name = %s,
+                    qty = %s,
+                    shop_id = %s,
+                    last_user_id = %s,
+                    last_change_at = NOW()
+                WHERE ean = %s
+                """,
+                (name, qty_val, shop_id_val, user_id, ean),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO items (ean, name, qty, shop_id, last_user_id, last_change_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                """,
+                (ean, name, qty_val, shop_id_val, user_id),
+            )
+            item_id = cur.lastrowid
+
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Error as e:
+        print(f"[api_save_item] DB-Fehler: {e}")
+        return jsonify({"ok": False, "message": "DB-Fehler"}), 500
+
+    return jsonify({"ok": True, "message": "Artikel gespeichert", "item_id": item_id})
+
+
+@flask_app.route("/api/lookup_ean")
+def api_lookup_ean_http():
+    """
+    Liefert zu einer EAN die vorhandenen Item-Daten (lokal) und optional externen Lookup.
+    Nutzt Api.lookup_ean().
+    """
+    global API_INSTANCE
+    if API_INSTANCE is None:
+        return jsonify({
+            "ean": "",
+            "name": "",
+            "image_path": "",
+            "qty": 0.0,
+            "shop_id": None,
+            "source": "none",
+            "message": "API nicht initialisiert"
+        }), 500
+
+    ean = (request.args.get("ean") or "").strip()
+    use_online = (request.args.get("online") == "1")
+
+    result = API_INSTANCE.lookup_ean(ean, use_online=use_online)
+    return jsonify(result)
+
+
+@flask_app.route("/api/logout", methods=["POST"])
+def api_logout():
+    """
+    Optional: HTTP-Logout, falls du per Button auf dem Handy ausloggen willst.
+    """
+    global API_INSTANCE
+    if API_INSTANCE is None:
+        return jsonify({"ok": False, "message": "API nicht initialisiert"}), 500
+    result = API_INSTANCE.logout()
+    return jsonify(result)
+
+
 # ------------------------------------------------------------
 # DB-Helferfunktionen für items (EAN, Name, Bild)
 # ------------------------------------------------------------
 
-def get_user_id_by_rfid(rfid_uid: str) -> int | None:
-    """
-    Liefert users.id zu einem RFID-Tag (users.rfid_uid) oder None.
-    """
+def get_user_by_rfid(rfid_uid: str):
+    rfid_uid = (rfid_uid or "").strip()
     if not rfid_uid:
         return None
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE rfid_uid = %s", (rfid_uid,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row[0] if row else None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name FROM users WHERE LOWER(rfid_uid) = LOWER(%s)",
+            (rfid_uid,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if row:
+            print(f"[rfid] get_user_by_rfid: UID={rfid_uid} -> id={row[0]}, name={row[1]}")
+            return {"id": row[0], "name": row[1]}
+        else:
+            print(f"[rfid] get_user_by_rfid: UID={rfid_uid} -> kein Treffer in users")
+        return None
+    except Error as e:
+        print(f"[get_user_by_rfid] DB-Fehler: {e}")
+        return None
+
 
 def update_product_name(ean: str, name: str, user_id: int | None = None) -> None:
     conn = get_db_connection()
@@ -212,9 +390,204 @@ def update_product_name(ean: str, name: str, user_id: int | None = None) -> None
     print(f"[update_product_name] EAN={ean}, name={name}, user_id={user_id}")
 
 
+def save_image_for_ean(ean: str, image_b64: str) -> str:
+    """
+    Speichert ein JPEG-Bild für diese EAN unter images/<ean>.jpg,
+    skaliert auf max. 800px Kantenlänge und ca. 70% Qualität.
+    Aktualisiert items.image_path. Gibt den Dateipfad zurück.
+    """
+    img_bytes = base64.b64decode(image_b64)
+
+    try:
+        img = Image.open(BytesIO(img_bytes))
+    except Exception as exc:
+        print(f"[save_image_for_ean] Fehler beim Öffnen des Bildes für EAN={ean}: {exc}")
+        # Notfall: Rohbytes ablegen
+        filename_raw = f"{ean}_raw.bin"
+        filepath_raw = os.path.join(IMAGE_DIR, filename_raw)
+        with open(filepath_raw, "wb") as f:
+            f.write(img_bytes)
+        return filepath_raw
+
+    img = img.convert("RGB")
+
+    max_size = 800
+    w, h = img.size
+    if max(w, h) > max_size:
+        img.thumbnail((max_size, max_size), Image.LANCZOS)
+
+    filename = f"{ean}.jpg"
+    filepath = os.path.join(IMAGE_DIR, filename)
+
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    img.save(filepath, format="JPEG", quality=70)
+
+    print(f"[save_image_for_ean] EAN={ean}, gespeichert: {filepath}, size={os.path.getsize(filepath)} bytes, orig={w}x{h}")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM items WHERE ean = %s", (ean,))
+    row = cur.fetchone()
+    if row:
+        cur.execute("UPDATE items SET image_path = %s WHERE ean = %s", (filepath, ean))
+    else:
+        cur.execute("""
+            INSERT INTO items (ean, name, image_path)
+            VALUES (%s, %s, %s)
+        """, (ean, "", filepath))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return filepath
+
+
+def broadcast_from_anywhere(message_dict: dict):
+    """
+    Aus jedem Thread heraus eine WS-Broadcast-Nachricht schicken.
+    """
+    global WS_LOOP
+    if WS_LOOP and WS_LOOP.is_running():
+        asyncio.run_coroutine_threadsafe(broadcast(message_dict), WS_LOOP)
+    else:
+        print("[broadcast_from_anywhere] WS_LOOP läuft nicht, kann nicht senden:", message_dict)
+
+
+# ------------------------------------------------------------
+# Api-Klasse für pywebview (lookup_ean / save_product)
+# ------------------------------------------------------------
+
 class Api:
     def __init__(self):
         init_db()
+        self.current_user_id = None
+        self.current_user_name = ""
+        self.session_timeout_minutes = 30  # Standard: 30 Minuten
+        self.current_user_expires_at = None  # UTC-Deadline, oder None für "kein Timeout"
+
+    def _apply_timeout(self):
+        """
+        Prüft, ob die aktuelle Session abgelaufen ist.
+        Wird bei get_current_user aufgerufen.
+        """
+        if self.current_user_id is None:
+            return
+        if self.current_user_expires_at is None:
+            return
+
+        now = datetime.now(timezone.utc)
+        if now >= self.current_user_expires_at:
+            print("[session] Session abgelaufen, User wird ausgeloggt.")
+            old_id = self.current_user_id
+            old_name = self.current_user_name
+            self.current_user_id = None
+            self.current_user_name = ""
+            self.current_user_expires_at = None
+
+            # optional: Logout per WS pushen
+            broadcast_from_anywhere({
+                "type": "user_logout",
+                "prev_user_id": old_id,
+                "prev_user_name": old_name,
+            })
+
+    def rfid_login(self, rfid_uid: str):
+        """
+        Wird aufgerufen, wenn ein Scan als möglicher RFID interpretiert wird.
+        Wenn rfid_uid in users.rfid_uid gefunden wird, setzen wir current_user_*.
+        """
+        user = get_user_by_rfid(rfid_uid)
+        if not user:
+            # Kein Alarm, nur "nicht erkannt"
+            return {
+                "ok": False,
+                "is_rfid": False,
+                "message": "RFID nicht erkannt"
+            }
+
+        self.current_user_id = user["id"]
+        self.current_user_name = user["name"]
+
+        if self.session_timeout_minutes > 0:
+            self.current_user_expires_at = datetime.now(timezone.utc) + timedelta(
+                minutes=self.session_timeout_minutes
+            )
+        else:
+            self.current_user_expires_at = None
+
+        print(f"[rfid_login] User angemeldet: id={self.current_user_id}, name={self.current_user_name}")
+
+        # WebSocket-Event für alle Clients -> Handy kann umschalten
+        broadcast_from_anywhere({
+            "type": "user_login",
+            "user_id": self.current_user_id,
+            "user_name": self.current_user_name,
+        })
+
+        return {
+            "ok": True,
+            "is_rfid": True,
+            "user_id": user["id"],
+            "user_name": user["name"],
+            "message": f"Angemeldet als {user['name']}"
+        }
+
+    def logout(self):
+        """
+        Manuelles Logout (z. B. per Button oder Desktop).
+        """
+        print(f"[session] Logout angefordert. User war: {self.current_user_name} ({self.current_user_id})")
+        old_id = self.current_user_id
+        old_name = self.current_user_name
+
+        self.current_user_id = None
+        self.current_user_name = ""
+        self.current_user_expires_at = None
+
+        broadcast_from_anywhere({
+            "type": "user_logout",
+            "prev_user_id": old_id,
+            "prev_user_name": old_name,
+        })
+
+        return {"ok": True}
+
+    def get_current_user(self):
+        self._apply_timeout()
+        if self.current_user_id is None:
+            return {
+                "user_id": None,
+                "user_name": "",
+                "timeout_minutes": self.session_timeout_minutes,
+                "expires_at": None,
+            }
+        return {
+            "user_id": self.current_user_id,
+            "user_name": self.current_user_name,
+            "timeout_minutes": self.session_timeout_minutes,
+            "expires_at": self.current_user_expires_at.isoformat() if self.current_user_expires_at else None,
+        }
+
+    def set_session_timeout(self, minutes: int):
+        """
+        Timeout in Minuten setzen. 0 = kein Auto-Logout.
+        Wenn ein User eingeloggt ist, wird die Deadline neu gesetzt.
+        """
+        try:
+            m = int(minutes)
+        except Exception:
+            m = 0
+        m = max(0, min(480, m))  # 0–480 Minuten
+        self.session_timeout_minutes = m
+        print(f"[session] Timeout-Minuten gesetzt auf {m}")
+
+        if self.current_user_id is not None and m > 0:
+            self.current_user_expires_at = datetime.now(timezone.utc) + timedelta(minutes=m)
+            print(f"[session] Neue Ablaufzeit: {self.current_user_expires_at}")
+        elif self.current_user_id is not None and m == 0:
+            self.current_user_expires_at = None
+            print("[session] Kein Auto-Logout für aktuelle Session.")
+
+        return {"ok": True, "timeout_minutes": self.session_timeout_minutes}
 
     def _db_get_product(self, ean: str):
         conn = get_db_connection()
@@ -289,6 +662,27 @@ class Api:
         cur.close()
         conn.close()
 
+    def lookup_ean(self, ean: str, use_online: bool = False):
+        ean = (ean or "").strip()
+        if not ean:
+            return {"ean": "", "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+
+        row = self._db_get_product(ean)
+        if row:
+            row["source"] = "local"
+            return row
+
+        # optionale externe DB (noch TODO, aber use_online ist da)
+        if use_online:
+            # Hier kommt später dein Online-Lookup hin (OpenFoodFacts o.Ä.)
+            # online = self._lookup_ean_online(ean)
+            # if online:
+            #     online["source"] = "online"
+            #     return online
+            pass
+
+        return {"ean": ean, "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
+
     def get_shops(self):
         """
         Liefert eine Liste der Shops für das Dropdown im Eingabemodus.
@@ -332,122 +726,6 @@ class Api:
             print(f"[get_shops] Unerwarteter Fehler: {e}")
             return []
 
-
-
-
-def save_image_for_ean(ean: str, image_b64: str) -> str:
-    """
-    Speichert ein JPEG-Bild für diese EAN unter images/<ean>.jpg,
-    skaliert auf max. 800px Kantenlänge und ca. 70% Qualität.
-    Aktualisiert items.image_path. Gibt den Dateipfad zurück.
-    """
-    img_bytes = base64.b64decode(image_b64)
-
-    try:
-        img = Image.open(BytesIO(img_bytes))
-    except Exception as exc:
-        print(f"[save_image_for_ean] Fehler beim Öffnen des Bildes für EAN={ean}: {exc}")
-        # Notfall: Rohbytes ablegen
-        filename_raw = f"{ean}_raw.bin"
-        filepath_raw = os.path.join(IMAGE_DIR, filename_raw)
-        with open(filepath_raw, "wb") as f:
-            f.write(img_bytes)
-        return filepath_raw
-
-    img = img.convert("RGB")
-
-    max_size = 800
-    w, h = img.size
-    if max(w, h) > max_size:
-        img.thumbnail((max_size, max_size), Image.LANCZOS)
-
-    filename = f"{ean}.jpg"
-    filepath = os.path.join(IMAGE_DIR, filename)
-
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    img.save(filepath, format="JPEG", quality=70)
-
-    print(f"[save_image_for_ean] EAN={ean}, gespeichert: {filepath}, size={os.path.getsize(filepath)} bytes, orig={w}x{h}")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM items WHERE ean = %s", (ean,))
-    row = cur.fetchone()
-    if row:
-        cur.execute("UPDATE items SET image_path = %s WHERE ean = %s", (filepath, ean))
-    else:
-        cur.execute("""
-            INSERT INTO items (ean, name, image_path)
-            VALUES (%s, %s, %s)
-        """, (ean, "", filepath))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return filepath
-
-
-# ------------------------------------------------------------
-# Api-Klasse für pywebview (lookup_ean / save_product)
-# ------------------------------------------------------------
-
-class Api:
-    def __init__(self):
-        init_db()
-
-    def _db_get_product(self, ean: str):
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT ean, name, image_path
-            FROM items
-            WHERE ean = %s
-        """, (ean,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if row:
-            return {
-                "ean": row[0],
-                "name": row[1],
-                "image_path": row[2] or ""
-            }
-        return None
-
-    def _db_save_product(self, ean: str, name: str, image_path: str | None = None):
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT image_path FROM items WHERE ean = %s", (ean,))
-        row = cur.fetchone()
-        if row and image_path is None:
-            image_path = row[0]
-
-        cur.execute("""
-            INSERT INTO items (ean, name, image_path)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                name = VALUES(name),
-                image_path = VALUES(image_path)
-        """, (ean, name, image_path))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-    def lookup_ean(self, ean: str, use_online: bool = False):
-        ean = (ean or "").strip()
-        if not ean:
-            return {"ean": "", "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
-
-        row = self._db_get_product(ean)
-        if row:
-            row["source"] = "local"
-            return row
-
-        # TODO: hier könnte externe EAN-API hin, wenn use_online True
-        return {"ean": ean, "name": "", "image_path": "", "qty": 0.0, "shop_id": None, "source": "none"}
-
-
-
     def save_product(
         self,
         ean: str,
@@ -465,7 +743,8 @@ class Api:
         # RFID → users.id (last_user_id)
         user_id = None
         if rfid_uid:
-            user_id = get_user_id_by_rfid(rfid_uid)
+            user_info = get_user_by_rfid(rfid_uid)
+            user_id = user_info["id"] if user_info else None
 
         try:
             self._db_save_product(ean, name, shop_id, qty, last_user_id=user_id)
@@ -475,14 +754,9 @@ class Api:
             return {"ok": False, "message": f"Fehler beim Speichern: {exc}"}
 
 
-
 # ------------------------------------------------------------
 # WebSocket-Server Desktop <-> Mobile
 # ------------------------------------------------------------
-
-connected_clients = set()
-last_article = None  # {"ean": "...", "name": "..."}
-
 
 async def broadcast(message_dict):
     if not connected_clients:
@@ -607,14 +881,60 @@ def start_ws_server():
             8765,
             max_size=None,  # kein Limit, wir begrenzen per Pillow
         ):
-            await asyncio.Future()
+            await asyncio.Future()  # läuft für immer
 
-    asyncio.run(main_ws())
+    global WS_LOOP
+    WS_LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(WS_LOOP)
+    WS_LOOP.run_until_complete(main_ws())
 
+
+# ------------------------------------------------------------
+# HTTP-Server & RFID-Monitor
+# ------------------------------------------------------------
 
 def start_http_server():
     print("HTTP-Server auf http://0.0.0.0:8000")
     flask_app.run(host="0.0.0.0", port=8000)
+
+
+def start_rfid_serial_monitor(api, port: str = "/dev/ttyUSB0", baudrate: int = 9600):
+    print(f"[rfid-serial] Starte Monitor auf {port} @ {baudrate}")
+
+    while True:
+        try:
+            with serial.Serial(port, baudrate, timeout=1) as ser:
+                print("[rfid-serial] Serial geöffnet, warte auf UIDs…")
+                while True:
+                    line = ser.readline().decode(errors="ignore").strip()
+                    if not line:
+                        continue
+
+                    print(f"[rfid-serial] Zeile empfangen: {line}")
+
+                    if not line.startswith("RFID:"):
+                        continue
+
+                    uid = line[5:].strip()
+                    if not uid:
+                        continue
+
+                    result = api.rfid_login(uid)
+                    if not result.get("ok"):
+                        print(f"[rfid-serial] UID {uid} nicht in users, ignoriere.")
+                        continue
+
+                    print(
+                        f"[rfid-serial] Login: {result['user_name']} "
+                        f"(id={result['user_id']}), Timeout={api.session_timeout_minutes} min"
+                    )
+
+        except serial.SerialException as e:
+            print(f"[rfid-serial] Fehler auf {port}: {e}. Neuer Versuch in 3s…")
+            time.sleep(3)
+        except Exception as e:
+            print(f"[rfid-serial] Unerwarteter Fehler im Serial-Monitor: {e}. Neuer Versuch in 3s…")
+            time.sleep(3)
 
 
 # ------------------------------------------------------------
@@ -622,10 +942,18 @@ def start_http_server():
 # ------------------------------------------------------------
 
 def main():
+    global API_INSTANCE
     api = Api()
+    API_INSTANCE = api
 
     threading.Thread(target=start_ws_server, daemon=True).start()
     threading.Thread(target=start_http_server, daemon=True).start()
+
+    threading.Thread(
+        target=start_rfid_serial_monitor,
+        args=(api, "/dev/ttyUSB0"),
+        daemon=True,
+    ).start()
 
     window = webview.create_window(
         "Mini-EAN-Scanner",

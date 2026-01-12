@@ -4,9 +4,80 @@ window.addEventListener('pywebviewready', () => {
         const eanInput = document.getElementById("ean");
         const nameInput = document.getElementById("name");
         const toggleOnline = document.getElementById("toggle-online-lookup");
+        const modeIndicator = document.getElementById("mode-indicator");
+        const timeoutInput = document.getElementById("session-timeout");
+        const logoutBtn = document.getElementById("logout-btn");
+
         let useOnlineLookup = toggleOnline ? toggleOnline.checked : false;
 
-        console.log("main.js gestartet");
+        // Eingabemodus-Status (für RFID, aber ändert nix am Online-Lookup)
+        let inputMode = false;
+        let currentUserId = null;
+        let currentUserName = "";
+        let currentTimeoutMinutes = 30;
+
+        console.log("main.js gestartet (mit Online-Checkbox und RFID-Polling)");
+
+        function updateModeIndicator(expiresAt) {
+            if (inputMode && currentUserName) {
+                let extra = "";
+                if (currentTimeoutMinutes > 0 && expiresAt) {
+                    extra = ` (Timeout: ${currentTimeoutMinutes} min)`;
+                } else if (currentTimeoutMinutes === 0) {
+                    extra = " (kein Auto-Logout)";
+                }
+                modeIndicator.textContent = `Modus: Eingabemodus (angemeldet: ${currentUserName})` + extra;
+            } else {
+                modeIndicator.textContent = "Modus: Scanmodus (kein Benutzer angemeldet)";
+            }
+        }
+
+        async function pollCurrentUser() {
+            try {
+                const res = await window.pywebview.api.get_current_user();
+                inputMode = !!res.user_id;
+                currentUserName = res.user_name || "";
+                currentTimeoutMinutes = typeof res.timeout_minutes === "number"
+                    ? res.timeout_minutes
+                    : currentTimeoutMinutes;
+
+                if (timeoutInput) {
+                    timeoutInput.value = currentTimeoutMinutes;
+                }
+
+                updateModeIndicator(res.expires_at);
+            } catch (e) {
+                console.log("Fehler bei get_current_user:", e);
+            }
+        }
+
+        if (timeoutInput) {
+            timeoutInput.addEventListener("change", async () => {
+                const minutes = parseInt(timeoutInput.value, 10);
+                try {
+                    const res = await window.pywebview.api.set_session_timeout(isNaN(minutes) ? 0 : minutes);
+                    currentTimeoutMinutes = res.timeout_minutes;
+                    await pollCurrentUser();
+                } catch (e) {
+                    console.log("Fehler bei set_session_timeout:", e);
+                }
+            });
+        }
+
+        if (logoutBtn) {
+            logoutBtn.addEventListener("click", async () => {
+                try {
+                    await window.pywebview.api.logout();
+                    await pollCurrentUser();
+                } catch (e) {
+                    console.log("Fehler bei logout:", e);
+                }
+            });
+        }
+
+        // RFID-Status alle 2 Sekunden abfragen
+        pollCurrentUser();
+        setInterval(pollCurrentUser, 5000);
 
         if (toggleOnline) {
             toggleOnline.addEventListener("change", () => {
@@ -19,7 +90,7 @@ window.addEventListener('pywebviewready', () => {
             window.location.reload();
         });
 
-        // Beim Start Fokus + Selektion erzwingen (Barcode-Scanner-Workflow)
+        // Beim Start Fokus + Selektion
         setTimeout(() => {
             eanInput.focus();
             eanInput.select();
@@ -54,7 +125,6 @@ window.addEventListener('pywebviewready', () => {
                     return;
                 }
 
-                // Bild-Update vom Server (wenn Mobile ein neues Foto hochgeladen hat)
                 if (msg.type === "image_updated") {
                     console.log("Desktop: image_updated für EAN", msg.ean);
                     if (currentArticle.ean && msg.ean === currentArticle.ean) {
@@ -63,8 +133,6 @@ window.addEventListener('pywebviewready', () => {
                         img.style.display = "block";
                     }
                 }
-
-                // Optional: current_article ignorieren oder bei Bedarf verwenden
             };
         }
 
@@ -74,7 +142,6 @@ window.addEventListener('pywebviewready', () => {
             const ean = eanInput.value.trim();
             if (!ean) {
                 alert("Bitte EAN eingeben.");
-                // Nach dem Alert wieder Fokus + Selektion
                 setTimeout(() => {
                     eanInput.focus();
                     eanInput.select();
@@ -82,23 +149,19 @@ window.addEventListener('pywebviewready', () => {
                 return;
             }
 
-            // pywebview-Backend aufrufen
+            // HIER: Flag wird an Python übergeben
             const result = await window.pywebview.api.lookup_ean(ean, useOnlineLookup);
 
-            // aktuellen Artikel merken
             currentArticle.ean = result.ean || null;
             currentArticle.name = result.name || "";
 
-            // Formular & Anzeige aktualisieren
             eanInput.value = result.ean || "";
             nameInput.value = result.name || "";
             document.getElementById("db-result").textContent =
                 JSON.stringify(result, null, 2);
 
-            // Bild anzeigen: über den HTTP-Endpoint /image/<ean>
             const img = document.getElementById("product-image");
             if (result.ean) {
-                // Cache-Buster dran, falls gerade neues Bild hochgeladen wurde
                 img.src = "/image/" + encodeURIComponent(result.ean) + "?t=" + Date.now();
                 img.style.display = "block";
             } else {
@@ -106,7 +169,6 @@ window.addEventListener('pywebviewready', () => {
                 img.style.display = "none";
             }
 
-            // aktuellen Artikel an WS-Server senden (für Mobile)
             if (wsDesktop && wsDesktop.readyState === WebSocket.OPEN) {
                 const payload = {
                     type: "set_article",
@@ -116,7 +178,6 @@ window.addEventListener('pywebviewready', () => {
                 wsDesktop.send(JSON.stringify(payload));
             }
 
-            // Nach jeder Suche: EAN-Feld fokussieren & komplett selektieren
             setTimeout(() => {
                 eanInput.focus();
                 eanInput.select();
@@ -129,15 +190,16 @@ window.addEventListener('pywebviewready', () => {
             const res = await window.pywebview.api.save_product(ean, name);
             alert(res.message || "OK");
 
-            // Nach dem Speichern wieder bereit für den nächsten Scan
             setTimeout(() => {
                 eanInput.focus();
                 eanInput.select();
             }, 0);
         }
 
-        // Damit Buttons weiter funktionieren
+        // für onclick in index.html
         window.lookup = lookup;
         window.saveManual = saveManual;
+
+        updateModeIndicator();
     });
 });
